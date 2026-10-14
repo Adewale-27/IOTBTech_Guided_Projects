@@ -1,0 +1,5 @@
+[web]
+project 1 <EC2_public_ip> ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/<key_pair>.pem
+
+[web:vars]
+ansible_python_interpreter=/usr/bin/python3

@@ -1,0 +1,54 @@
+# playbook.yml 
+
+---
+- name: Configure Ubuntu EC2
+  hosts: all
+  become: true
+
+  tasks:
+    - name: Update server
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: dist
+
+    - name: Install Docker and Nginx
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - nginx
+        state: present
+
+    - name: Start and enable Docker
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Start and enable Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: true
+
+    - name: Add ubuntu user to docker group
+      ansible.builtin.user:
+        name: ubuntu
+        groups: docker
+        append: true
+
+    - name: Test server is reachable
+      ansible.builtin.ping:
+
+    - name: Test Docker works
+      ansible.builtin.command: docker run --rm hello-world
+      register: hello
+      changed_when: false
+
+    - name: Test Nginx is running
+      ansible.builtin.uri:
+        url: http://localhost
+        status_code: 200
+
+    - name: Show result
+      ansible.builtin.debug:
+        msg: "Server, Docker, and Nginx are working successfully."

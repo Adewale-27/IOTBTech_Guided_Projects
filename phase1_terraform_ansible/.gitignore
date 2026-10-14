@@ -1,0 +1,31 @@
+# Terraform working directory
+.terraform/
+
+# Terraform state
+*.tfstate
+*.tfstate.*
+terraform.tfstate
+terraform.tfstate.backup
+
+# Terraform variables
+*.tfvars
+!*.tfvars.example
+
+# Terraform plans
+*.tfplan
+tfplan
+
+# Sensitive files
+*.pem
+*.key
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# inventory
+inventory.ini

@@ -1,0 +1,6 @@
+aws_region         = "your_region"
+vpc_cidr           = "vpc_cidr"
+public_subnet_cidr = "public_subnet_cidr"
+allowed_ssh_cidr   = "ssh_cidr"
+instance_type      = "instance_type"
+key_pair           = "your_key_pair"
