@@ -1,0 +1,30 @@
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Terraform files
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Sensitive keys
+*.pem
+*.key
+
+# Node.js
+node_modules/
+npm-debug.log*
+.next/
+
+# OS files
+.DS_Store
+Thumbs.db
