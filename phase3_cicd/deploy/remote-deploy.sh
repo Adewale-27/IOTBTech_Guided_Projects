@@ -30,12 +30,69 @@ DB_CONTAINER="${DB_CONTAINER:-zeetafin-db}"
 BE_CONTAINER="${BE_CONTAINER:-zeetafin-be}"
 FE_CONTAINER="${FE_CONTAINER:-zeetafin-fe}"
 PROXY_CONTAINER="${PROXY_CONTAINER:-zeetafin-proxy}"
+PROXY_IMAGE="${PROXY_IMAGE:-nginx:1.27-alpine}"
 
 BE_IMAGE_REF="${ECR_REGISTRY}/${ECR_REPOSITORY}:zeetafin-be-${IMAGE_TAG}"
 FE_IMAGE_REF="${ECR_REGISTRY}/${ECR_REPOSITORY}:zeetafin-fe-${IMAGE_TAG}"
 
 POSTGRES_USER="${POSTGRES_USER:-postgres}"
 POSTGRES_DB="${POSTGRES_DB:-zeetafin}"
+
+NGINX_CONF_PATH="${NGINX_CONF_PATH:-/tmp/phase3-deploy/nginx.conf}"
+NGINX_CONF_LABEL="zeetafin.nginx.conf.sha256"
+NGINX_CONF_SHA="$(sha256sum "${NGINX_CONF_PATH}" 2>/dev/null | awk '{print $1}')"
+
+# --- Helpers ------------------------------------------------------------------
+# True when the container exists, is running, and was started from exactly the
+# same image (compared by image ID, not by tag).
+container_is_current() {
+  local container="$1"
+  local image_ref="$2"
+
+  local state running_image desired_image
+  state="$(docker inspect --format '{{.State.Running}}' "${container}" 2>/dev/null || true)"
+  [ "${state}" = "true" ] || return 1
+
+  running_image="$(docker inspect --format '{{.Image}}' "${container}" 2>/dev/null || true)"
+  desired_image="$(docker image inspect --format '{{.Id}}' "${image_ref}" 2>/dev/null || true)"
+
+  [ -n "${desired_image}" ] || return 1
+  [ "${running_image}" = "${desired_image}" ]
+}
+
+# Keeps the deployment idempotent: a container that is already running the
+# exact target image is left untouched, anything else is removed so that it can
+# be recreated with the new image.
+# Returns 0 when the container was kept, 1 when it was removed.
+prepare_container() {
+  local container="$1"
+  local image_ref="$2"
+
+  if container_is_current "${container}" "${image_ref}"; then
+    echo "Container ${container} is already running the target image - keeping it"
+    return 0
+  fi
+
+  echo "Removing ${container} (if any)..."
+  docker rm -f "${container}" 2>/dev/null || true
+  return 1
+}
+
+# The proxy container also mounts nginx.conf into it, so keeping the container
+# is only safe when that file has not changed since the container was created.
+# The checksum of the file is stored as a label on the container.
+proxy_is_current() {
+  local container="$1"
+  local image_ref="$2"
+
+  container_is_current "${container}" "${image_ref}" || return 1
+
+  local container_sha
+  container_sha="$(docker inspect --format "{{index .Config.Labels \"${NGINX_CONF_LABEL}\"}}" "${container}" 2>/dev/null || true)"
+
+  [ -n "${NGINX_CONF_SHA}" ] || return 1
+  [ "${container_sha}" = "${NGINX_CONF_SHA}" ]
+}
 
 # --- AWS CLI (needed to authenticate Docker with ECR) -----------------------
 if ! command -v aws >/dev/null 2>&1; then
@@ -62,19 +119,19 @@ docker pull "${FE_IMAGE_REF}"
 docker network create "${NETWORK}" 2>/dev/null || true
 docker volume create "${DB_VOLUME}" 2>/dev/null || true
 
-# --- Stop the old containers so the new version replaces them -----------------
-echo "Stopping old containers (if any)..."
-docker rm -f "${DB_CONTAINER}" "${BE_CONTAINER}" "${FE_CONTAINER}" "${PROXY_CONTAINER}" 2>/dev/null || true
-
 # --- Database ------------------------------------------------------------------
-echo "Starting PostgreSQL..."
-docker run -d --name "${DB_CONTAINER}" --network "${NETWORK}" \
-  --restart unless-stopped \
-  -e POSTGRES_USER="${POSTGRES_USER}" \
-  -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
-  -e POSTGRES_DB="${POSTGRES_DB}" \
-  -v "${DB_VOLUME}:/var/lib/postgresql/data" \
-  "${DB_IMAGE}"
+if prepare_container "${DB_CONTAINER}" "${DB_IMAGE}"; then
+  echo "PostgreSQL is already up to date - skipping"
+else
+  echo "Starting PostgreSQL..."
+  docker run -d --name "${DB_CONTAINER}" --network "${NETWORK}" \
+    --restart unless-stopped \
+    -e POSTGRES_USER="${POSTGRES_USER}" \
+    -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
+    -e POSTGRES_DB="${POSTGRES_DB}" \
+    -v "${DB_VOLUME}:/var/lib/postgresql/data" \
+    "${DB_IMAGE}"
+fi
 
 echo "Waiting for the database to become ready..."
 for _ in $(seq 1 30); do
@@ -85,21 +142,29 @@ for _ in $(seq 1 30); do
 done
 
 # --- Backend -------------------------------------------------------------------
-echo "Starting backend..."
-docker run -d --name "${BE_CONTAINER}" --network "${NETWORK}" \
-  --restart unless-stopped \
-  -e NODE_ENV=production \
-  -e DB_HOST="${DB_CONTAINER}" -e DB_PORT=5432 \
-  -e DB_USERNAME="${POSTGRES_USER}" -e DB_PASSWORD="${POSTGRES_PASSWORD}" \
-  -e DB_NAME="${POSTGRES_DB}" \
-  -e JWT_SECRET="${JWT_SECRET}" -e PORT=3001 \
-  "${BE_IMAGE_REF}"
+if prepare_container "${BE_CONTAINER}" "${BE_IMAGE_REF}"; then
+  echo "Backend is already up to date - skipping"
+else
+  echo "Starting backend..."
+  docker run -d --name "${BE_CONTAINER}" --network "${NETWORK}" \
+    --restart unless-stopped \
+    -e NODE_ENV=production \
+    -e DB_HOST="${DB_CONTAINER}" -e DB_PORT=5432 \
+    -e DB_USERNAME="${POSTGRES_USER}" -e DB_PASSWORD="${POSTGRES_PASSWORD}" \
+    -e DB_NAME="${POSTGRES_DB}" \
+    -e JWT_SECRET="${JWT_SECRET}" -e PORT=3001 \
+    "${BE_IMAGE_REF}"
+fi
 
 # --- Frontend ------------------------------------------------------------------
-echo "Starting frontend..."
-docker run -d --name "${FE_CONTAINER}" --network "${NETWORK}" \
-  --restart unless-stopped \
-  "${FE_IMAGE_REF}"
+if prepare_container "${FE_CONTAINER}" "${FE_IMAGE_REF}"; then
+  echo "Frontend is already up to date - skipping"
+else
+  echo "Starting frontend..."
+  docker run -d --name "${FE_CONTAINER}" --network "${NETWORK}" \
+    --restart unless-stopped \
+    "${FE_IMAGE_REF}"
+fi
 
 # --- Nginx reverse proxy (only public entry point, port 80) -------------------
 # Phase 1 (Ansible) installs nginx as a system service, which permanently holds
@@ -110,12 +175,19 @@ if command -v systemctl >/dev/null 2>&1; then
   sudo systemctl disable nginx 2>/dev/null || true
 fi
 
-echo "Starting nginx reverse proxy..."
-docker run -d --name "${PROXY_CONTAINER}" --network "${NETWORK}" \
-  --restart unless-stopped \
-  -p 80:80 \
-  -v /tmp/phase3-deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro \
-  nginx:1.27-alpine
+if proxy_is_current "${PROXY_CONTAINER}" "${PROXY_IMAGE}"; then
+  echo "Nginx proxy is already up to date - skipping"
+else
+  echo "Removing ${PROXY_CONTAINER} (if any)..."
+  docker rm -f "${PROXY_CONTAINER}" 2>/dev/null || true
+  echo "Starting nginx reverse proxy..."
+  docker run -d --name "${PROXY_CONTAINER}" --network "${NETWORK}" \
+    --restart unless-stopped \
+    --label "${NGINX_CONF_LABEL}=${NGINX_CONF_SHA}" \
+    -p 80:80 \
+    -v "${NGINX_CONF_PATH}:/etc/nginx/conf.d/default.conf:ro" \
+    "${PROXY_IMAGE}"
+fi
 
 # --- Verify the deployment -----------------------------------------------------
 echo "Waiting for the application to become reachable..."

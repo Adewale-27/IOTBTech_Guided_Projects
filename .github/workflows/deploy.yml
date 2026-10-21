@@ -32,7 +32,32 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      # The image tag contains the commit SHA, so the same commit always maps to
+      # the same tag. ECR tags are immutable, so an image that already exists
+      # must not be built and pushed again - the build steps are skipped instead.
+      - name: Check if images already exist in ECR
+        id: check-images
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          if docker manifest inspect "$ECR_REGISTRY/$ECR_REPOSITORY:$BE_IMAGE-$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "be_exists=true" >> "$GITHUB_OUTPUT"
+            echo "Backend image $BE_IMAGE-$IMAGE_TAG already exists in ECR - skipping build and push"
+          else
+            echo "be_exists=false" >> "$GITHUB_OUTPUT"
+            echo "Backend image $BE_IMAGE-$IMAGE_TAG not found in ECR - it will be built"
+          fi
+          if docker manifest inspect "$ECR_REGISTRY/$ECR_REPOSITORY:$FE_IMAGE-$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "fe_exists=true" >> "$GITHUB_OUTPUT"
+            echo "Frontend image $FE_IMAGE-$IMAGE_TAG already exists in ECR - skipping build and push"
+          else
+            echo "fe_exists=false" >> "$GITHUB_OUTPUT"
+            echo "Frontend image $FE_IMAGE-$IMAGE_TAG not found in ECR - it will be built"
+          fi
+
       - name: Build and push backend image
+        if: steps.check-images.outputs.be_exists != 'true'
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
@@ -44,6 +69,7 @@ jobs:
           docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$BE_IMAGE-$IMAGE_TAG"
 
       - name: Build and push frontend image
+        if: steps.check-images.outputs.fe_exists != 'true'
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}

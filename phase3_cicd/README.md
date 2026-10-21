@@ -5,11 +5,11 @@
 This phase creates a GitHub Actions CI/CD pipeline that automatically:
 
 1. Checks out the application code
-2. Builds the Docker images for the backend and frontend
+2. Builds the Docker images for the backend and frontend (skipped if the image for that commit is already in ECR)
 3. Authenticates with AWS
 4. Pushes the images to Amazon ECR
 5. Connects to the EC2 server over SSH
-6. Pulls the new images and replaces the old containers
+6. Pulls the new images and replaces the old containers (containers already running the target image are left alone)
 7. Verifies that the application is accessible
 
 No manual deployment is required. Every push to the `main` branch triggers the pipeline.
@@ -93,11 +93,12 @@ Developer pushes code
 | 1 | Checkout application code | Downloads the repository on the runner |
 | 2 | Configure AWS credentials | Uses `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` from GitHub Secrets |
 | 3 | Login to Amazon ECR | Gets a Docker login token for ECR |
-| 4 | Build and push backend image | Multi-stage build of `ZeetaFin-BE`, tagged `zeetafin-be-<commit-sha>` |
-| 5 | Build and push frontend image | Multi-stage build of `ZeetaFin-FE`, tagged `zeetafin-fe-<commit-sha>` |
-| 6 | Copy deploy files to EC2 | SCPs `remote-deploy.sh` and `nginx.conf` to the server |
-| 7 | Deploy new containers to EC2 | Runs `remote-deploy.sh` on the server over SSH |
-| 8 | Verify application is accessible | Curls the frontend and the API through port 80 |
+| 4 | Check if images already exist in ECR | Looks for `zeetafin-be-<commit-sha>` and `zeetafin-fe-<commit-sha>` in the registry |
+| 5 | Build and push backend image | Multi-stage build of `ZeetaFin-BE`, tagged `zeetafin-be-<commit-sha>` (skipped if the image already exists) |
+| 6 | Build and push frontend image | Multi-stage build of `ZeetaFin-FE`, tagged `zeetafin-fe-<commit-sha>` (skipped if the image already exists) |
+| 7 | Copy deploy files to EC2 | SCPs `remote-deploy.sh` and `nginx.conf` to the server |
+| 8 | Deploy new containers to EC2 | Runs `remote-deploy.sh` on the server over SSH |
+| 9 | Verify application is accessible | Curls the frontend and the API through port 80 |
 
 ### Image Tagging
 
@@ -110,6 +111,36 @@ Each image is tagged with the commit SHA:
 
 Because the ECR repository uses immutable tags, every deployment gets a unique tag.
 
+### Idempotency
+
+The pipeline is idempotent: running it again for a commit that has already been
+deployed does not rebuild, re-push or restart anything.
+
+| Situation | What happens |
+|-----------|--------------|
+| First push of a commit | The images are built, pushed to ECR and deployed |
+| Re-run of the same commit (manual `workflow_dispatch` or a re-run of a failed job) | The images already exist in ECR, so the build and push steps are skipped and the existing images are deployed |
+| Push of a new commit | The SHA changes, so the tags are new and the images are built and deployed as normal |
+
+Two things make this work:
+
+- **In the workflow** - the `Check if images already exist in ECR` step uses
+  `docker manifest inspect` against the registry. Each build step is gated with
+  `if: steps.check-images.outputs.<image>_exists != 'true'`, so an image that is
+  already in ECR is never built or pushed again. Without this, the push would
+  fail because ECR tags are immutable.
+- **On the EC2 server** - `remote-deploy.sh` compares the image ID of each
+  running container with the image it wants to run. A container that is already
+  running the exact target image is left alone, so the application is not
+  restarted unnecessarily. A container running a different image, a stopped
+  container, or a missing container is still removed and recreated, so a genuine
+  update always replaces the old version.
+- **The proxy container** - the nginx reverse proxy mounts `nginx.conf` into the
+  container, so the image alone is not enough to decide whether it can be kept.
+  The script stores the checksum of `nginx.conf` as a label on the container and
+  recreates the proxy whenever that file changes, so a configuration change is
+  always applied even though the image stays the same.
+
 ## What Happens on the EC2 Server
 
 `phase3_cicd/deploy/remote-deploy.sh` is executed on EC2 by the pipeline:
@@ -117,14 +148,17 @@ Because the ECR repository uses immutable tags, every deployment gets a unique t
 1. Installs the AWS CLI if it is missing
 2. Authenticates Docker with Amazon ECR
 3. Pulls the new backend and frontend images
-4. Stops the **old** containers (`zeetafin-db`, `zeetafin-be`, `zeetafin-fe`, `zeetafin-proxy`)
+4. For each container (`zeetafin-db`, `zeetafin-be`, `zeetafin-fe`): if it is already running the exact target image it is left untouched, otherwise it is removed so it can be recreated
 5. Stops and disables the system `nginx` service (Phase 1 installs it as a system service and it holds host port 80)
 6. Starts PostgreSQL (data persists in the `zeetafin-pgdata` volume)
 7. Starts the new backend and frontend containers
-8. Starts an nginx reverse proxy on port 80
+8. Starts an nginx reverse proxy on port 80 (recreated when `nginx.conf` changed, kept otherwise)
 9. Waits until `http://localhost/` and `http://localhost/api/docs` respond
 
-Old containers are always removed before the new ones start, so a new version replaces the previous one on every deployment.
+A container that already runs the target image is never removed, so re-running
+the pipeline for the same commit does not restart the application. A container
+running a different image is always removed and replaced, so a new version still
+takes over from the previous one.
 
 ## Nginx Reverse Proxy
 
@@ -266,7 +300,7 @@ This phase demonstrates a complete CI/CD pipeline:
 
 - **GitHub Actions** orchestrates the build, push, and deployment
 - **Amazon ECR** stores versioned Docker images
-- **SSH deployment** replaces old containers with the new version
+- **SSH deployment** replaces old containers with the new version, and leaves containers that already run the target image untouched (idempotent re-runs)
 - **Nginx** exposes the application securely on port 80
 - **GitHub Secrets** keep all credentials out of the repository
 
