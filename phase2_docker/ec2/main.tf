@@ -72,6 +72,21 @@ resource "aws_security_group" "ssh" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # ingress {
+  #   description = "HTTP"
+  #   from_port   = 4000
+  #   to_port     = 4000
+  #   protocol    = "tcp"
+  #   cidr_blocks = [var.allowed_ssh_cidr]
+  # }
+
+  # ingress {
+  #   description = "HTTP"
+  #   from_port   = 3000
+  #   to_port     = 3000
+  #   protocol    = "tcp"
+  #   cidr_blocks = [var.allowed_ssh_cidr]
+  # }
 
   egress {
     from_port   = 0
@@ -114,13 +129,21 @@ data "aws_ami" "ubuntu" {
 # }
 
 resource "aws_instance" "project-linux" {
-  ami                    = data.aws_ami.ubuntu.id
-  instance_type          = var.instance_type
-  subnet_id              = aws_subnet.public.id
-  vpc_security_group_ids = [aws_security_group.ssh.id]
-  # key_name                    = aws_key_pair.key.key_name
+  ami                         = data.aws_ami.ubuntu.id
+  instance_type               = var.instance_type
+  subnet_id                   = aws_subnet.public.id
+  vpc_security_group_ids      = [aws_security_group.ssh.id]
   key_name                    = var.key_pair
   associate_public_ip_address = true
+
+  user_data = <<-EOF
+              #!/bin/bash
+              set -euxo pipefail
+              apt-get update -y
+              apt-get install -y docker.io curl unzip
+              systemctl enable --now docker
+              usermod -aG docker ubuntu
+              EOF
 
   tags = { Name = "project-ec2" }
 }

@@ -17,10 +17,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=builder /app/dist ./dist
-COPY phase2_docker/Application/ZeetaFin-BE/docker-entrypoint.sh ./
-RUN chmod +x phase2_docker/Application/ZeetaFin-BE/docker-entrypoint.sh && sed -i 's/\r$//' phase2_docker/Application/ZeetaFin-BE/docker-entrypoint.sh
+COPY docker-entrypoint.sh ./
+RUN sed -i 's/\r$//' docker-entrypoint.sh && chmod +x docker-entrypoint.sh
 USER node
 EXPOSE 3001
-ENTRYPOINT ["./phase2_docker/Application/ZeetaFin-BE/docker-entrypoint.sh"]
+ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["node", "dist/main"]
 
