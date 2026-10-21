@@ -61,8 +61,9 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER || 'ubuntu' }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: "phase3_cicd/deploy/"
+          source: "phase3_cicd/deploy/*"
           target: /tmp/phase3-deploy
+          strip_components: 2
           overwrite: true
 
       - name: Deploy new containers to EC2

@@ -118,10 +118,11 @@ Because the ECR repository uses immutable tags, every deployment gets a unique t
 2. Authenticates Docker with Amazon ECR
 3. Pulls the new backend and frontend images
 4. Stops the **old** containers (`zeetafin-db`, `zeetafin-be`, `zeetafin-fe`, `zeetafin-proxy`)
-5. Starts PostgreSQL (data persists in the `zeetafin-pgdata` volume)
-6. Starts the new backend and frontend containers
-7. Starts an nginx reverse proxy on port 80
-8. Waits until `http://localhost/` and `http://localhost/api/docs` respond
+5. Stops and disables the system `nginx` service (Phase 1 installs it as a system service and it holds host port 80)
+6. Starts PostgreSQL (data persists in the `zeetafin-pgdata` volume)
+7. Starts the new backend and frontend containers
+8. Starts an nginx reverse proxy on port 80
+9. Waits until `http://localhost/` and `http://localhost/api/docs` respond
 
 Old containers are always removed before the new ones start, so a new version replaces the previous one on every deployment.
 
@@ -226,7 +227,9 @@ Screenshots demonstrating the completed pipeline are stored in `evidence/`:
 |---------|-------|
 | Workflow fails at AWS login | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` secrets |
 | Workflow fails at SSH step | `EC2_HOST`, `EC2_USER`, `EC2_SSH_KEY` secrets; key pair matches the instance |
+| SSH step: "No such file or directory" for `remote-deploy.sh` | The SCP step must copy the files flat into `/tmp/phase3-deploy` (`source: "phase3_cicd/deploy/*"` with `strip_components: 2`) |
 | ECR push denied | IAM user has `ecr:PutImage` permissions on the repository |
+| Proxy container exits: "port is already allocated" | The system `nginx` service from Phase 1 is holding port 80 — it is stopped by `remote-deploy.sh`; check `sudo systemctl status nginx` |
 | Containers start but app unreachable | `docker logs zeetafin-be`, `docker logs zeetafin-proxy` |
 | Backend cannot reach database | Backend and database must be on the `zeetafin-net` network |
 

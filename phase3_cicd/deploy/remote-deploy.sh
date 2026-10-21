@@ -102,6 +102,14 @@ docker run -d --name "${FE_CONTAINER}" --network "${NETWORK}" \
   "${FE_IMAGE_REF}"
 
 # --- Nginx reverse proxy (only public entry point, port 80) -------------------
+# Phase 1 (Ansible) installs nginx as a system service, which permanently holds
+# host port 80. Free it before publishing the proxy container on :80.
+echo "Freeing port 80 from the system nginx service (if running)..."
+if command -v systemctl >/dev/null 2>&1; then
+  sudo systemctl stop nginx 2>/dev/null || true
+  sudo systemctl disable nginx 2>/dev/null || true
+fi
+
 echo "Starting nginx reverse proxy..."
 docker run -d --name "${PROXY_CONTAINER}" --network "${NETWORK}" \
   --restart unless-stopped \
